@@ -1,0 +1,30 @@
+# --- Secrets and Environment ---
+.env
+*.env
+# Se excluyen tokens y configuraciones de ngrok
+.ngrok2/
+ngrok.log
+
+# --- Elastic & Kibana ---
+# Opcional: excluir exportaciones NDJSON si contienen datos sensibles
+# *.ndjson
+# Excluir logs locales de Elastic si se usan agentes locales
+*.log
+
+# --- Python (MCP Bridge) ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+build/
+dist/
+.pytest_cache/
+
+# --- Infrastructure & OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*copy*

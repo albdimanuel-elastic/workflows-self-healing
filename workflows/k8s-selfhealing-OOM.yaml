@@ -1,0 +1,75 @@
+# ==========================================
+# 1. GLOBAL CONFIGURATIONS
+# ==========================================
+consts:
+  mcp_bridge_url: "YOUR MCP BRIDGE"
+  mcp_token: "your token"
+  # Index name for audit trail
+  audit_index: "self-healing-audit"
+
+# ==========================================
+# 2. WORKFLOW METADATA
+# ==========================================
+version: '1'
+name: K8s Self-Healing - OOM (25% Increasement)
+description: Automatic remediation with fixed ISO timestamp for auditing.
+enabled: true
+
+# ==========================================
+# 3. TRIGGERS
+# ==========================================
+triggers:
+  - type: alert
+
+# ==========================================
+# 4. EXECUTION STEPS
+# ==========================================
+steps:
+  # ----------------------------------------------------------------
+  # STEP 1: Call the Remediation Bridge (MCP)
+  # ----------------------------------------------------------------
+  - name: call_mcp_remediation
+    type: http
+    with:
+      url: "{{ consts.mcp_bridge_url }}"
+      method: POST
+      headers:
+        Content-Type: application/json
+        Authorization: "Bearer {{ consts.mcp_token }}"
+      body:
+        action: "increment_memory"
+        # 🎯 FIX: Changed key from 'deployment' to 'target' to match FastAPI model
+        target: "{{ event.alerts[0].kibana.alert.grouping.kubernetes.pod.name }}"
+        namespace: "test-sre"
+    timeout: 300s
+
+  # ----------------------------------------------------------------
+  # STEP 2: Console Logging
+  # ----------------------------------------------------------------
+  - name: log_success
+    type: console
+    # IF removed: Workflow halts automatically if Step 1 fails.
+    with:
+      message: "✅ FIX APPLIED: Triggered memory increment for pod '{{ event.alerts[0].kibana.alert.grouping.kubernetes.pod.name }}'. MCP Response: {{ steps.call_mcp_remediation.output.data.message }}"
+
+ # ----------------------------------------------------------------
+  # STEP 3: Audit Trail
+  # ----------------------------------------------------------------
+  - name: audit_remediation
+    type: elasticsearch.index
+    # IF removed: Guaranteed to execute only after a successful HTTP call.
+    with:
+      index: "{{ consts.audit_index }}"
+      document:
+        "@timestamp": "{{ event.alerts[0]['@timestamp'] }}"
+        rule_name: "{{ event.alerts[0].kibana.alert.rule.name }}"
+        alert_id: "{{ event.alerts[0].id }}"
+        
+        # 🎯 FIX: Unificado a 'target_deployment' para que el Dashboard lo lea correctamente
+        target_deployment: "{{ event.alerts[0].kibana.alert.grouping.kubernetes.pod.name }}"
+        namespace: "test-sre"
+        
+        action_type: "increment_memory"
+        mcp_status: "{{ steps.call_mcp_remediation.output.data.status }}"
+        mcp_message: "{{ steps.call_mcp_remediation.output.data.message }}"
+        workflow_id: "{{ execution.workflowId }}"

@@ -1,0 +1,95 @@
+---
+- name: "Full Observability Stack Deployment: OTel + Elastic Serverless"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Namespace variables for consistency across tasks
+    otel_ns: "opentelemetry-operator-system"
+    demo_ns: "otel-demo"
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # STEP 0: ENVIRONMENT INITIALIZATION
+    # -------------------------------------------------------------------------
+    - name: "0. Extract credentials from .env file (Final Robust Version)"
+      set_fact:
+        # 'cut -d"=" -f2-' ensures we get everything after the FIRST '='
+        # 'xargs' is a trick to strip leading/trailing whitespace/newlines
+        elastic_api_key: "{{ lookup('pipe', 'grep ELASTIC_API_KEY .env | cut -d\"=\" -f2- | xargs') }}"
+        elastic_endpoint: "{{ lookup('pipe', 'grep ELASTIC_ENDPOINT .env | cut -d\"=\" -f2- | xargs') }}"
+
+    - name: "0.1 Reset Minikube environment"
+      # Cleans up the previous state to ensure idempotency and resource availability
+      ansible.builtin.shell: |
+        minikube delete
+        minikube start --driver=docker --memory=8000 --cpus 4
+      changed_when: true
+
+    # -------------------------------------------------------------------------
+    # STEP 1: PREREQUISITES (CERT-MANAGER)
+    # -------------------------------------------------------------------------
+    - name: "1. Install Cert-Manager"
+      # The OTel Operator requires Cert-Manager to handle TLS for its Admission Webhooks.
+      ansible.builtin.shell: |
+        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+        kubectl wait --for=condition=Available deployment --all -n cert-manager --timeout=120s
+      changed_when: true
+
+    # -------------------------------------------------------------------------
+    # STEP 2: OPEN-TELEMETRY OPERATOR
+    # -------------------------------------------------------------------------
+    - name: "2. Install OpenTelemetry Operator (Vanilla)"
+      # Installs the operator using the 'contrib' image to support all receivers.
+      ansible.builtin.shell: |
+        helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+        helm repo update
+        helm install opentelemetry-operator open-telemetry/opentelemetry-operator \
+          --namespace {{ otel_ns }} \
+          --create-namespace \
+          --set manager.collectorImage.repository=otel/opentelemetry-collector-contrib
+      changed_when: true
+
+    - name: "2.1 Wait for OTel Operator Webhook readiness"
+      # CRITICAL: Prevents 'connection refused' by waiting for the operator's 
+      # conversion webhook to be fully operational before creating a Collector.
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=Available deployment/opentelemetry-operator -n {{ otel_ns }} --timeout=120s
+      changed_when: false
+
+    # -------------------------------------------------------------------------
+    # STEP 3: INFRASTRUCTURE SECRETS
+    # -------------------------------------------------------------------------
+    - name: "3. Provision Elastic Credentials"
+      # Creates the ConfigMap and Secret that the Collector will use as environment variables.
+      ansible.builtin.shell: |
+        kubectl create secret generic elastic-auth \
+          --namespace {{ otel_ns }} \
+          --from-literal=ELASTIC_API_KEY="{{ elastic_api_key }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+          
+        kubectl create configmap otel-network-config \
+          --namespace {{ otel_ns }} \
+          --from-literal=ELASTIC_ENDPOINT="{{ elastic_endpoint }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      changed_when: true
+
+    # -------------------------------------------------------------------------
+    # STEP 4: ACCESS CONTROL (RBAC)
+    # -------------------------------------------------------------------------
+    - name: "4. Apply RBAC Permissions"
+      # Grants the collector 'list' and 'watch' permissions on pods, nodes, and events.
+      # This is vital for metadata enrichment and the Cluster Events dashboard.
+      ansible.builtin.shell: "kubectl apply -f RBAC-values.yaml"
+      changed_when: true
+
+    # -------------------------------------------------------------------------
+    # STEP 5: THE TELEMETRY ENGINE (COLLECTOR)
+    # -------------------------------------------------------------------------
+    - name: "5. Deploy Vanilla Collector"
+      # Deploys the Collector Custom Resource (CR). 
+      # Ensure otel-vanilla-collector.yaml uses 'v1beta1' to avoid deprecation warnings.
+      ansible.builtin.shell: "kubectl apply -f otel-vanilla-collector.yaml"
+      changed_when: true
+

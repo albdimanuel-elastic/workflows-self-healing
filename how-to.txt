@@ -1,0 +1,22 @@
+1- Desplegar Operator vanilla
+
+ansible-playbook deploy-motel-vanilla.yaml
+
+1- desplegar el Deployment
+
+kubectl apply -f deployment-ha-prod-alarm.yaml
+
+2- Chequear que llegan métricas al cluster
+
+
+FROM metrics-k8sclusterreceiver.otel*
+| WHERE kubernetes.namespace == "test-sre"AND kubernetes.deployment.name == "memory-stresser"
+
+3- Chequear la memoria
+
+
+
+kubectl get deployment memory-stresser -n test-sre -o yaml | grep -A 5 resources
+
+
+

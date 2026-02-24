@@ -1,0 +1,153 @@
+# -----------------------------------------------------------------------------
+# OpenTelemetry Collector (Vanilla Contrib Distribution)
+# Purpose: Collects, processes, and exports metrics, traces, and logs to Elastic.
+# -----------------------------------------------------------------------------
+
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-vanilla-collector
+  namespace: opentelemetry-operator-system
+spec:
+  # Using the 'contrib' image to access K8s-specific receivers like k8s_events.
+  image: otel/opentelemetry-collector-contrib:latest
+  # 'daemonset' ensures one collector instance runs on every node of the cluster.
+  mode: daemonset
+  # Required to collect host-level network metrics and reach the Kubelet API.
+  hostNetwork: true
+  
+  # Environment variables for secure connectivity and node discovery.
+  env:
+    - name: K8S_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    - name: ELASTIC_OTLP_ENDPOINT
+      valueFrom:
+        configMapKeyRef: { name: otel-network-config, key: ELASTIC_ENDPOINT }
+    - name: ELASTIC_API_KEY
+      valueFrom: { secretKeyRef: { name: elastic-auth, key: ELASTIC_API_KEY } }
+
+  # NOTA: En v1beta1, 'config' es un objeto estructurado nativo de YAML.
+  config:
+    receivers:
+      # Standard OTLP entry point for applications (like the OTel Demo).
+      otlp:
+        protocols:
+          grpc: {}
+          http: {}
+      
+      # Collects hardware/OS metrics (CPU, RAM, Disk) from the node.
+      hostmetrics:
+        root_path: /hostfs
+        collection_interval: 30s
+        scrapers:
+          cpu: {}
+          memory: {}
+          network: {}
+          disk: {}
+          load: {}
+          filesystem:
+            exclude_mount_points:
+              # CRITICAL: 'match_type: regexp' is required in v0.144.0 to avoid startup errors.
+              match_type: regexp
+              mount_points: 
+                - ^/hostfs/var/lib/docker/containers.*
+                - ^/hostfs/var/lib/kubelet/pods.*
+
+      # Watches cluster-wide objects (Deployments, HPAs) for the Workload Overview.
+      k8s_cluster:
+        collection_interval: 30s
+        # Aseguramos que se recolecten métricas de nodos y recursos para Elastic
+        node_conditions_to_report: [Ready, DiskPressure, MemoryPressure]
+        allocatable_types_to_report: [cpu, memory]
+      
+      # Captures K8s logs/events to populate the 'Cluster Events' dashboard in Elastic.
+      k8s_events:
+        auth_type: "serviceAccount"
+
+      # Scrapes container-level metrics (CPU usage per pod) from the Kubelet API.
+      kubeletstats:
+        collection_interval: 30s
+        auth_type: "serviceAccount"
+        endpoint: "https://${env:K8S_NODE_NAME}:10250"
+        insecure_skip_verify: true
+        metric_groups:
+          - node
+          - pod
+          - container
+          - volume
+
+    processors:
+      # Groups data to reduce the number of outgoing requests to Elastic.
+      batch:
+        send_batch_size: 1000
+        timeout: 10s
+      
+      # Forzamos la detección del nombre del sistema para que Elastic reconozca el Host.
+      resourcedetection:
+        detectors: [env, system, k8snode]
+        override: true
+        system:
+          hostname_sources: ["os"]
+      
+      # Vinculación de metadatos de Kubernetes para recuperar los Deployments.
+      k8sattributes:
+        auth_type: "serviceAccount"
+        passthrough: false
+        filter:
+          node_from_env_var: K8S_NODE_NAME
+        extract:
+          metadata:
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.namespace.name
+            - k8s.node.name
+            - k8s.deployment.name
+            - k8s.statefulset.name
+            - k8s.daemonset.name
+            - k8s.cronjob.name
+            - k8s.job.name
+        # Asociación explícita para que las métricas de KubeletStats recuperen el nombre del Deployment.
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+
+    exporters:
+      # Nombre de componente exacto para v0.145.0
+      otlp_grpc:
+        endpoint: "${ELASTIC_OTLP_ENDPOINT}"
+        headers:
+          Authorization: "ApiKey ${ELASTIC_API_KEY}"
+
+    service:
+      # Pipelines define how data flows from Receivers -> Processors -> Exporters.
+      pipelines:
+        metrics:
+          receivers: [otlp, hostmetrics, kubeletstats, k8s_cluster]
+          processors: [resourcedetection, k8sattributes, batch]
+          exporters: [otlp_grpc]
+        traces:
+          receivers: [otlp]
+          processors: [resourcedetection, k8sattributes, batch]
+          exporters: [otlp_grpc]
+        logs:
+          # k8s_events are treated as logs in OpenTelemetry.
+          receivers: [otlp, k8s_events]
+          processors: [resourcedetection, k8sattributes, batch]
+          exporters: [otlp_grpc]
+
+  # Required to allow hostmetrics to read the underlying node filesystem.
+  volumeMounts:
+    - name: hostfs
+      mountPath: /hostfs
+      readOnly: true
+      mountPropagation: HostToContainer
+  volumes:
+    - name: hostfs
+      hostPath:
+        path: /

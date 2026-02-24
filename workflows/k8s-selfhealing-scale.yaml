@@ -1,0 +1,73 @@
+# ==========================================
+# 1. GLOBAL CONFIGURATIONS
+# ==========================================
+consts:
+  mcp_bridge_url: "https://hegemonic-multinucleate-margaret.ngrok-free.dev/manage"
+  mcp_token: "6f8e2d4a1b9c3e5f7a0b2d4c6e8f0a1b3c5d7e9f2a4b6c8d"
+  # Index name for audit trail
+  audit_index: "self-healing-audit"
+
+# ==========================================
+# 2. WORKFLOW METADATA
+# ==========================================
+version: "1"
+name: k8s Self-Healing - Scale Replicas
+description: Automatic HA scaling remediation. Scaling logic and replica count are delegated to the MCP backend.
+enabled: true
+
+# ==========================================
+# 3. TRIGGERS
+# ==========================================
+triggers:
+  - type: alert
+
+# ==========================================
+# 4. EXECUTION STEPS
+# ==========================================
+steps:
+  # ----------------------------------------------------------------
+  # STEP 1: Call the Remediation Bridge (MCP)
+  # ----------------------------------------------------------------
+  - name: scale_horizontal
+    type: http
+    with:
+      url: "{{ consts.mcp_bridge_url }}"
+      method: POST
+      headers:
+        Content-Type: application/json
+        Authorization: "Bearer {{ consts.mcp_token }}"
+      body:
+        action: "scale"
+        # 🎯 Strict dot notation for the grouped deployment name
+        target: "{{ event.alerts[0].kibana.alert.grouping.kubernetes.deployment.name }}" 
+        namespace: "test-sre"
+        # ARCHITECT NOTE: 'replicas' key removed. The MCP Python backend now calculates the required instances.
+    timeout: 300s
+
+  # ----------------------------------------------------------------
+  # STEP 2: Console Logging
+  # ----------------------------------------------------------------
+  - name: log_success
+    type: console
+    # IF removed: Workflow halts automatically if Step 1 fails.
+    with:
+      message: "✅ FIX APPLIED: Triggered scaling for deployment '{{ event.alerts[0].kibana.alert.grouping.kubernetes.deployment.name }}'. MCP Response: {{ steps.scale_horizontal.output.data.message }}"
+
+  # ----------------------------------------------------------------
+  # STEP 3: Audit Trail
+  # ----------------------------------------------------------------
+  - name: audit_remediation
+    type: elasticsearch.index
+    # IF removed: Guaranteed to execute only after a successful HTTP call.
+    with:
+      index: "{{ consts.audit_index }}"
+      document:
+        "@timestamp": "{{ event.alerts[0]['@timestamp'] }}"
+        rule_name: "{{ event.alerts[0].kibana.alert.rule.name }}"
+        alert_id: "{{ event.alerts[0].id }}"
+        target_deployment: "{{ event.alerts[0].kibana.alert.grouping.kubernetes.deployment.name }}"
+        namespace: "test-sre"
+        action_type: "scale_horizontal"
+        mcp_status: "{{ steps.scale_horizontal.output.data.status }}"
+        mcp_message: "{{ steps.scale_horizontal.output.data.message }}"
+        workflow_id: "{{ execution.workflowId }}"

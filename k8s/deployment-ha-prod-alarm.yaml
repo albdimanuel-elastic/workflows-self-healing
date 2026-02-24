@@ -1,0 +1,32 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prod-app-ha-test
+  namespace: test-sre
+  labels:
+    app: prod-app-ha-test
+    # This label maps to resource.attributes.deployment.environment in OTel
+    deployment.environment: "prod"
+spec:
+  # Starting with 1 replica to trigger the "HA Guard" Alert (which looks for replicas == 1)
+  replicas: 1 
+  selector:
+    matchLabels:
+      app: prod-app-ha-test
+  template:
+    metadata:
+      labels:
+        app: prod-app-ha-test
+        deployment.environment: "prod"
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        resources:
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+          requests:
+            memory: "32Mi"
+            cpu: "10m"

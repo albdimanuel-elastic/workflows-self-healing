@@ -1,0 +1,50 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector-role
+rules:
+  # Permisos para metadatos, eventos y recursos core
+- apiGroups: [""]
+  resources: 
+    - pods
+    - nodes
+    - nodes/stats
+    - nodes/proxy
+    - nodes/metrics
+    - namespaces
+    - events
+    - services
+    - endpoints
+    - replicationcontrollers
+    - resourcequotas
+    - limitranges
+  verbs: ["get", "list", "watch"]
+  # Permisos para Workloads (Dashboard de Kubernetes)
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+  verbs: ["get", "list", "watch"]
+  # Permisos para Auto-escalado
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch"]
+  # Permisos para Jobs
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch"]
+  # Permisos para métricas de rendimiento (Kubelet)
+- apiGroups: [""]
+  resources: ["nodes/stats", "nodes/proxy", "nodes/metrics"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector-binding
+subjects:
+- kind: ServiceAccount
+  name: otel-vanilla-collector-collector 
+  namespace: opentelemetry-operator-system
+roleRef:
+  kind: ClusterRole
+  name: otel-collector-role
+  apiGroup: rbac.authorization.k8s.io
